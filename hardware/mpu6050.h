@@ -78,4 +78,26 @@ esp_err_t mpu6050_read_accel_gyro(int16_t *acc_x, int16_t *acc_y, int16_t *acc_z
  */
 void mpu6050_print_data(void);
 
+/**
+ * @brief 扫描I2C总线，查找所有连接的设备
+ */
+void mpu6050_scan_i2c(void);
+
+/**
+ * @brief 重置失败计数器，用于在新的录制周期开始时重置状态
+ */
+void mpu6050_reset_fail_count(void);
+
+/**
+ * @brief 检查MPU6050设备健康状态
+ * @return true: 设备正常, false: 设备异常
+ */
+bool mpu6050_health_check(void);
+
+/**
+ * @brief 重新初始化MPU6050设备
+ * @return true: 重新初始化成功, false: 重新初始化失败
+ */
+bool mpu6050_reinit(void);
+
 #endif /* _MPU6050_H_ */

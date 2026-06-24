@@ -8,7 +8,7 @@
  *     - 特征总数：EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE = 100 × 16 = 1600
  *     - 数据布局：按帧交错 [f0_ax0, f0_ax1, ..., f0_ax15, f1_ax0, ..., f99_ax15]
  *   DSP 处理链：
- *     Raw 1600 floats → Spectral Analysis (FFT) → 208 features → INT8 NN → 4 classes
+ *     Raw 1600 floats → Raw Features → 1600 features → INT8 NN → 3 classes
  */
 
 #include "inference.h"
@@ -29,10 +29,6 @@ extern "C" {
 static const char *TAG = "Inference";
 
 static float s_features[EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE];
-
-// Flex 传感器基线校准值（开机时静止状态 ADC 读数）
-static float s_flex_baseline[POTENTIOMETER_COUNT] = {0};
-static bool  s_flex_calibrated = false;
 
 static int get_signal_data(size_t offset, size_t length, float *out_ptr)
 {
@@ -84,24 +80,21 @@ esp_err_t inference_run(inference_result_t *result)
 
         int base = frame * EI_CLASSIFIER_RAW_SAMPLES_PER_FRAME;
 
-        // === Flex 传感器 (ADC 原始值减去基线，消除漂移) ===
+        // === Flex 传感器 (ADC 原始值，与训练数据格式一致) ===
+        // 训练数据使用原始ADC值，推理时也必须使用原始值
         for (int i = 0; i < POTENTIOMETER_COUNT; i++) {
-            float corrected = (float)flex_values[i] - s_flex_baseline[i];
-            s_features[base + i] = corrected;
+            s_features[base + i] = (float)flex_values[i];
         }
 
-        // === IMU 数据 (原始 int16 → 物理单位) ===
-        // MPU6050 寄存器配置: ACCEL_CONFIG=0x18 (±16g), GYRO_CONFIG=0x18 (±2000°/s)
-        // 加速度灵敏度: 2048 LSB/g → 转换为 m/s²: raw / 2048.0 * 9.80665
-        // 陀螺仪灵敏度: 16.4 LSB/(°/s) → 转换为 °/s: raw / 16.4
-        const float ACCEL_SCALE = 2048.0f / 9.80665f;  // LSB → m/s² (灵敏度2048LSB/g, 除以g→m/s²换算系数)
-        const float GYRO_SCALE  = 16.4f;                 // LSB → °/s
-        s_features[base + 10] = (float)acc_x  / ACCEL_SCALE;
-        s_features[base + 11] = (float)acc_y  / ACCEL_SCALE;
-        s_features[base + 12] = (float)acc_z  / ACCEL_SCALE;
-        s_features[base + 13] = (float)gyro_x / GYRO_SCALE;
-        s_features[base + 14] = (float)gyro_y / GYRO_SCALE;
-        s_features[base + 15] = (float)gyro_z / GYRO_SCALE;
+        // === IMU 数据 (原始 int16 值，与训练数据格式一致) ===
+        // Edge Impulse DSP 配置: scale_axes = 1.0f，不进行缩放
+        // 训练数据使用原始值，推理时也必须使用原始值
+        s_features[base + 10] = (float)acc_x;
+        s_features[base + 11] = (float)acc_y;
+        s_features[base + 12] = (float)acc_z;
+        s_features[base + 13] = (float)gyro_x;
+        s_features[base + 14] = (float)gyro_y;
+        s_features[base + 15] = (float)gyro_z;
 
         // 打印前3帧和后3帧的数据（含 IMU 物理单位和 flex 校准值）
         if (frame < 3 || frame >= EI_CLASSIFIER_RAW_SAMPLE_COUNT - 3) {
@@ -109,9 +102,9 @@ esp_err_t inference_run(inference_result_t *result)
                    frame,
                    flex_values[0], flex_values[1], flex_values[2], flex_values[3], flex_values[4],
                    flex_values[5], flex_values[6], flex_values[7], flex_values[8], flex_values[9]);
-            printf(" | acc:%6.1f %6.1f %6.1f m/s² | gyro:%6.1f %6.1f %6.1f °/s\n",
-                   (float)acc_x / ACCEL_SCALE, (float)acc_y / ACCEL_SCALE, (float)acc_z / ACCEL_SCALE,
-                   (float)gyro_x / GYRO_SCALE, (float)gyro_y / GYRO_SCALE, (float)gyro_z / GYRO_SCALE);
+            printf(" | acc:%6d %6d %6d (raw) | gyro:%6d %6d %6d (raw)\n",
+                   acc_x, acc_y, acc_z,
+                   gyro_x, gyro_y, gyro_z);
         }
     }
 
@@ -185,30 +178,6 @@ esp_err_t inference_init(void)
     run_classifier_init();
 
     memset(s_features, 0, sizeof(s_features));
-
-    // === Flex 传感器基线校准 ===
-    // 开机时读取 10 次取平均，作为静止状态的基线参考
-    // 目的：消除电源电压、温度等环境因素导致的 ADC 漂移
-    printf("[校准] Flex 传感器基线采集中，请保持手套静止放松...\n");
-    float sum[POTENTIOMETER_COUNT] = {0};
-    const int calib_samples = 10;
-    for (int i = 0; i < calib_samples; i++) {
-        int values[POTENTIOMETER_COUNT] = {0};
-        potentiometer_read_all(values);
-        for (int j = 0; j < POTENTIOMETER_COUNT; j++) {
-            sum[j] += (float)values[j];
-        }
-        vTaskDelay(pdMS_TO_TICKS(50));
-    }
-    for (int j = 0; j < POTENTIOMETER_COUNT; j++) {
-        s_flex_baseline[j] = sum[j] / calib_samples;
-    }
-    s_flex_calibrated = true;
-    printf("[校准] Flex 基线值: ");
-    for (int j = 0; j < POTENTIOMETER_COUNT; j++) {
-        printf("%.0f ", s_flex_baseline[j]);
-    }
-    printf("\n[校准] 完成\n");
 
     ESP_LOGI(TAG, "Inference module initialized");
     ESP_LOGI(TAG, "  DSP input: %d features (%d frames x %d axes)",

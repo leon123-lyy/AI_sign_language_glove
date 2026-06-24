@@ -9,6 +9,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "../hardware/sdcard.h"
+#include "../hardware/mpu6050.h"
 #include "../software/get_data.h"
 #include "label_counter.h"
 
@@ -25,6 +26,20 @@ esp_err_t recorder_start(const char *label)
     if (!label || strlen(label) == 0) {
         ESP_LOGE(TAG, "Invalid label");
         return ESP_ERR_INVALID_ARG;
+    }
+
+    // 重置MPU6050失败计数器，避免累积错误
+    mpu6050_reset_fail_count();
+
+    // 健康检查MPU6050设备
+    if (!mpu6050_health_check()) {
+        ESP_LOGW(TAG, "MPU6050 health check failed, attempting re-initialization...");
+        // 尝试重新初始化MPU6050
+        if (!mpu6050_reinit()) {
+            ESP_LOGE(TAG, "MPU6050 re-initialization failed, continuing without IMU data");
+        } else {
+            ESP_LOGI(TAG, "MPU6050 re-initialized successfully");
+        }
     }
 
     // 检查SD卡是否已挂载

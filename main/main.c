@@ -112,6 +112,10 @@ static void uart_command_task(void* arg)
                     } else if (token && strcmp(token, "reset") == 0) {
                         label_counter_reset_all();
                         printf("[系统] 标签计数已重置\n\n");
+                    } else if (token && strcmp(token, "scan") == 0) {
+                        printf("[系统] 开始扫描I2C总线...\n");
+                        mpu6050_scan_i2c();
+                        printf("\n");
                     }
                 }
 
@@ -142,33 +146,57 @@ void app_main(void)
         }
     }
 
-    i2c_config_t i2c_config = {
-        .mode = I2C_MODE_MASTER,
-        .sda_io_num = GPIO_NUM_17,
-        .scl_io_num = GPIO_NUM_18,
-        .sda_pullup_en = GPIO_PULLUP_ENABLE,   // 开启内部上拉（45kΩ），降速配合弱上拉
-        .scl_pullup_en = GPIO_PULLUP_ENABLE,   // 若仍有问题：外加4.7kΩ到3.3V，再关掉此项
-        .master.clk_speed = 100000,            // 降为100kHz标准模式，更稳定
-    };
-    ESP_ERROR_CHECK(i2c_param_config(I2C_NUM_0, &i2c_config));
-    ESP_ERROR_CHECK(i2c_driver_install(I2C_NUM_0, I2C_MODE_MASTER, 0, 0, 0));
-
-    // === I2C 硬件快速诊断 ===
-    gpio_set_level(GPIO_NUM_17, 1);
-    gpio_set_level(GPIO_NUM_18, 1);
-    ESP_LOGI(TAG, "I2C pins configured: SDA=GPIO17, SCL=GPIO18");
-    ESP_LOGI(TAG, "Checking SDA voltage...");
-    int sda_level = gpio_get_level(GPIO_NUM_17);
-    int scl_level = gpio_get_level(GPIO_NUM_18);
-    ESP_LOGI(TAG, "SDA=GPIO17 level=%d, SCL=GPIO18 level=%d (should be 1,1)", sda_level, scl_level);
-    if (sda_level == 0 || scl_level == 0) {
-        ESP_LOGW(TAG, "I2C lines are LOW! Check pull-up resistors and GY-521 power!");
+    // === I2C 配置 ===
+    // ESP32-S3 的 GPIO17/18 默认被 JTAG 占用，需要先释放
+    #define I2C_SDA_PIN    GPIO_NUM_17
+    #define I2C_SCL_PIN    GPIO_NUM_18
+    
+    // 释放JTAG引脚，将其用于普通GPIO
+    // GPIO17=TDI, GPIO18=TDO, GPIO19=TCK, GPIO20=TMS
+    gpio_reset_pin(GPIO_NUM_17);
+    gpio_reset_pin(GPIO_NUM_18);
+    
+    // 设置为输入模式并启用内部上拉
+    gpio_set_direction(I2C_SDA_PIN, GPIO_MODE_INPUT);
+    gpio_set_direction(I2C_SCL_PIN, GPIO_MODE_INPUT);
+    gpio_set_pull_mode(I2C_SDA_PIN, GPIO_PULLUP_ONLY);
+    gpio_set_pull_mode(I2C_SCL_PIN, GPIO_PULLUP_ONLY);
+    vTaskDelay(pdMS_TO_TICKS(50));
+    
+    int sda_level = gpio_get_level(I2C_SDA_PIN);
+    int scl_level = gpio_get_level(I2C_SCL_PIN);
+    ESP_LOGI(TAG, "=== I2C Hardware Pre-Check ===");
+    ESP_LOGI(TAG, "SDA=GPIO%d level=%d, SCL=GPIO%d level=%d (expected: 1,1)", 
+             I2C_SDA_PIN, sda_level, I2C_SCL_PIN, scl_level);
+    
+    if (sda_level == 0 && scl_level == 0) {
+        ESP_LOGE(TAG, "I2C LINES ARE BOTH LOW! Check wiring and pull-up resistors.");
+    } else if (sda_level == 0 || scl_level == 0) {
+        ESP_LOGE(TAG, "One I2C line is LOW! Check wiring.");
+    } else {
+        ESP_LOGI(TAG, "I2C lines are HIGH - pull-up resistors working");
     }
 
-    esp_err_t mpu_ret = mpu6050_init(I2C_NUM_0, GPIO_NUM_17, GPIO_NUM_18);
+    i2c_config_t i2c_config = {
+        .mode = I2C_MODE_MASTER,
+        .sda_io_num = I2C_SDA_PIN,
+        .scl_io_num = I2C_SCL_PIN,
+        .sda_pullup_en = GPIO_PULLUP_ENABLE,
+        .scl_pullup_en = GPIO_PULLUP_ENABLE,
+        .master.clk_speed = 50000,
+    };
+    
+    ESP_ERROR_CHECK(i2c_param_config(I2C_NUM_0, &i2c_config));
+    ESP_ERROR_CHECK(i2c_driver_install(I2C_NUM_0, I2C_MODE_MASTER, 0, 0, 0));
+    ESP_LOGI(TAG, "I2C driver installed: Port=I2C_NUM_0, SDA=GPIO%d, SCL=GPIO%d, speed=50kHz", 
+             I2C_SDA_PIN, I2C_SCL_PIN);
+    
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    esp_err_t mpu_ret = mpu6050_init(I2C_NUM_0, I2C_SDA_PIN, I2C_SCL_PIN);
     if (mpu_ret != ESP_OK) {
         printf("[警告] MPU6050 初始化失败，系统将仅使用电位器数据\n");
-        printf("[警告] 检查 I2C 接线: SDA=GPIO17, SCL=GPIO18\n\n");
+        printf("[警告] 检查 I2C 接线: SDA=GPIO%d, SCL=GPIO%d\n\n", I2C_SDA_PIN, I2C_SCL_PIN);
     }
 
     potentiometer_init();
@@ -194,6 +222,7 @@ void app_main(void)
     printf("\n=== 手语数据采集系统 ===\n");
     printf("命令: label <名称>  - 设置录制标签 (默认: gesture)\n");
     printf("命令: reset         - 重置标签计数\n");
+    printf("命令: scan          - 扫描I2C总线，检测MPU6050设备\n");
     printf("按钮: GPIO42       - 按下开始录制CSV文件\n");
     printf("按钮: GPIO41       - 按下开始2秒手势识别\n");
     printf("按钮: GPIO40       - 按下发送ESP-NOW手势标签\n");

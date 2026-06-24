@@ -8,7 +8,7 @@ idf_component_register(SRCS "main.c"
                     "../app/inference.cpp"  # 新增推理模块
                     "../app/button.cpp"      # 新增按钮模块
                     "../app/espnow_sender_wrapper.cpp"  # ESP-NOW发送模块（C++包装）
-                    "tflite-model/tflite_learn_991408_9_compiled.cpp"
+                    "tflite-model/tflite_learn_991408_14_compiled.cpp"
                     # KISS FFT 源文件
                     "edge-impulse-sdk/dsp/kissfft/kiss_fft.cpp"
                     "edge-impulse-sdk/dsp/kissfft/kiss_fftr.cpp"

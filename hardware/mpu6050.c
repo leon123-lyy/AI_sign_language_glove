@@ -1,5 +1,6 @@
 #include "mpu6050.h"
 #include "driver/i2c.h"
+#include "driver/gpio.h"
 #include "esp_log.h"
 
 static const char *TAG = "MPU6050";
@@ -28,6 +29,8 @@ static const char *TAG = "MPU6050";
 
 // I2C配置
 static i2c_port_t s_i2c_num = I2C_NUM_0;
+static gpio_num_t s_sda_pin = GPIO_NUM_17;
+static gpio_num_t s_scl_pin = GPIO_NUM_18;
 static uint8_t s_mpu6050_addr = MPU6050_ADDR_AD0_LOW;
 static bool s_mpu6050_ready = false;  // 设备就绪标志
 
@@ -46,7 +49,6 @@ static esp_err_t mpu6050_write_reg(uint8_t reg_addr, uint8_t data)
     return ret;
 }
 
-// 读取MPU6050寄存器（带自动重试）
 static esp_err_t mpu6050_read_reg(uint8_t reg_addr, uint8_t *data, size_t len)
 {
     int ret;
@@ -63,7 +65,7 @@ static esp_err_t mpu6050_read_reg(uint8_t reg_addr, uint8_t *data, size_t len)
         }
         i2c_master_read_byte(cmd, data + len - 1, I2C_MASTER_NACK);
         i2c_master_stop(cmd);
-        ret = i2c_master_cmd_begin(s_i2c_num, cmd, pdMS_TO_TICKS(10));
+        ret = i2c_master_cmd_begin(s_i2c_num, cmd, pdMS_TO_TICKS(50));
         i2c_cmd_link_delete(cmd);
 
         if (ret == ESP_OK) {
@@ -71,7 +73,7 @@ static esp_err_t mpu6050_read_reg(uint8_t reg_addr, uint8_t *data, size_t len)
         }
 
         if (attempt < 2) {
-            vTaskDelay(pdMS_TO_TICKS(2));
+            vTaskDelay(pdMS_TO_TICKS(5));
         }
     }
 
@@ -82,29 +84,35 @@ static esp_err_t mpu6050_read_reg(uint8_t reg_addr, uint8_t *data, size_t len)
                  reg_addr, len, ret, read_fail_count);
     }
 
-    return ret;
+    return (ret < 0) ? ESP_ERR_INVALID_RESPONSE : ret;
 }
 
 static bool mpu6050_wakeup(void)
 {
-    esp_err_t ret = mpu6050_write_reg(MPU6050_REG_PWR_MGMT_1, 0x00);
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Wakeup PWR_MGMT_1 write failed, retrying...");
-        vTaskDelay(pdMS_TO_TICKS(50));
+    esp_err_t ret;
+
+    for (int retry = 0; retry < 3; retry++) {
         ret = mpu6050_write_reg(MPU6050_REG_PWR_MGMT_1, 0x00);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Wakeup retry failed");
-            return false;
+        if (ret == ESP_OK) {
+            break;
         }
+        ESP_LOGW(TAG, "Wakeup PWR_MGMT_1 write failed (retry %d/3), retrying...", retry + 1);
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Wakeup PWR_MGMT_1 failed after 3 attempts");
+        return false;
     }
 
-    vTaskDelay(pdMS_TO_TICKS(50));
+    vTaskDelay(pdMS_TO_TICKS(100));
 
     ret = mpu6050_write_reg(MPU6050_REG_PWR_MGMT_2, 0x00);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to write PWR_MGMT_2");
         return false;
     }
+
+    vTaskDelay(pdMS_TO_TICKS(20));
 
     ret = mpu6050_write_reg(MPU6050_REG_SMPLRT_DIV, 0x07);
     if (ret != ESP_OK) {
@@ -130,7 +138,7 @@ static bool mpu6050_wakeup(void)
         return false;
     }
 
-    vTaskDelay(pdMS_TO_TICKS(20));
+    vTaskDelay(pdMS_TO_TICKS(50));
 
     uint8_t verify[6];
     ret = mpu6050_read_reg(MPU6050_REG_ACCEL_XOUT_H, verify, 6);
@@ -147,15 +155,41 @@ static bool mpu6050_wakeup(void)
     return true;
 }
 
+static bool is_known_imu_who_am_i(uint8_t who_am_i)
+{
+    uint8_t known_values[] = {0x68, 0x69, 0x70, 0x71, 0x72, 0x73};
+    for (size_t i = 0; i < sizeof(known_values); i++) {
+        if (who_am_i == known_values[i]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static const char* get_imu_name(uint8_t who_am_i)
+{
+    switch (who_am_i) {
+        case 0x68: return "MPU6050";
+        case 0x69: return "MPU6500";
+        case 0x70: return "MPU6000";
+        case 0x71: return "MPU6500";
+        case 0x72: return "MPU9250";
+        case 0x73: return "MPU9150";
+        default:   return "Unknown IMU";
+    }
+}
+
 esp_err_t mpu6050_init(i2c_port_t i2c_num, gpio_num_t sda_pin, gpio_num_t scl_pin)
 {
     s_i2c_num = i2c_num;
+    s_sda_pin = sda_pin;
+    s_scl_pin = scl_pin;
     
-    vTaskDelay(pdMS_TO_TICKS(100));
+    vTaskDelay(pdMS_TO_TICKS(200));
     
-    // I2C 总线扫描，显示所有在线设备和WHO_AM_I信息
     ESP_LOGI(TAG, "Scanning I2C bus for all devices...");
     int found_count = 0;
+    
     for (uint8_t addr = 0x08; addr < 0x78; addr++) {
         i2c_cmd_handle_t cmd = i2c_cmd_link_create();
         i2c_master_start(cmd);
@@ -168,7 +202,6 @@ esp_err_t mpu6050_init(i2c_port_t i2c_num, gpio_num_t sda_pin, gpio_num_t scl_pi
             found_count++;
             ESP_LOGI(TAG, "I2C device found at address: 0x%02X", addr);
 
-            // 尝试读取WHO_AM_I寄存器 (寄存器地址0x75)
             uint8_t who_am_i = 0;
             uint8_t reg_addr = 0x75;
             i2c_cmd_handle_t read_cmd = i2c_cmd_link_create();
@@ -183,59 +216,21 @@ esp_err_t mpu6050_init(i2c_port_t i2c_num, gpio_num_t sda_pin, gpio_num_t scl_pi
             i2c_cmd_link_delete(read_cmd);
 
             if (who_err == ESP_OK) {
-                // 识别已知传感器
-                const char* known_device = "Unknown";
-                if (who_am_i == 0x68) known_device = "MPU6050";
-                else if (who_am_i == 0x69) known_device = "MPU6500/MPU6000";
-                else if (who_am_i == 0x70) known_device = "MPU6000";
-                else if (who_am_i == 0x71) known_device = "MPU6500";
-                else if (who_am_i == 0x72) known_device = "MPU9250";
-                else if (who_am_i == 0x73) known_device = "MPU9150";
-                else if (who_am_i == 0x58) known_device = "BMP280";
-                else if (who_am_i == 0x60) known_device = "BMP280/BME280";
-                else if (who_am_i == 0x0C) known_device = "AK8963(Magnetometer)";
-
-                ESP_LOGI(TAG, "  -> WHO_AM_I=0x%02X (%s)", who_am_i, known_device);
+                ESP_LOGI(TAG, "  -> WHO_AM_I=0x%02X (%s)", who_am_i, get_imu_name(who_am_i));
             } else {
                 ESP_LOGI(TAG, "  -> WHO_AM_I read failed (may not be IMU sensor)");
             }
         }
     }
     ESP_LOGI(TAG, "I2C scan complete, found %d device(s)", found_count);
+    
     if (found_count == 0) {
         ESP_LOGE(TAG, "No I2C devices found! Check wiring and power.");
-    }
-    
-    // 专门测试 0x68 和 0x69 地址
-    for (int test_addr = 0x68; test_addr <= 0x69; test_addr++) {
-        i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-        i2c_master_start(cmd);
-        i2c_master_write_byte(cmd, (test_addr << 1) | I2C_MASTER_WRITE, true);
-        i2c_master_stop(cmd);
-        esp_err_t err = i2c_master_cmd_begin(s_i2c_num, cmd, pdMS_TO_TICKS(100));
-        i2c_cmd_link_delete(cmd);
-        ESP_LOGI(TAG, "Test I2C addr 0x%02X: %s (err=%d)", test_addr, 
-                 err == ESP_OK ? "ACK" : "NO ACK", err);
     }
     
     uint8_t addrs[] = {MPU6050_ADDR_AD0_LOW, MPU6050_ADDR_AD0_HIGH};
     bool found = false;
     esp_err_t ret;
-
-    // 已知IMU传感器的WHO_AM_I值
-    struct {
-        uint8_t who_am_i;
-        const char* name;
-        uint8_t expected_accel_config;
-        uint8_t expected_gyro_config;
-    } const known_imu[] = {
-        {0x68, "MPU6050",   0x18, 0x18},  // ±16g, ±2000°/s
-        {0x69, "MPU6500",   0x18, 0x18},
-        {0x70, "MPU6000",   0x18, 0x18},  // 兼容MPU6000
-        {0x71, "MPU6500",   0x18, 0x18},
-        {0x72, "MPU9250",   0x18, 0x18},  // MPU9250辅I2C
-        {0x73, "MPU9150",   0x18, 0x18},
-    };
 
     for (int i = 0; i < 2; i++) {
         s_mpu6050_addr = addrs[i];
@@ -247,27 +242,14 @@ esp_err_t mpu6050_init(i2c_port_t i2c_num, gpio_num_t sda_pin, gpio_num_t scl_pi
             continue;
         }
 
-        // 检查是否是已知的IMU传感器
-        const char* sensor_name = "Unknown";
-        bool is_known_imu = false;
-
-        for (size_t j = 0; j < sizeof(known_imu)/sizeof(known_imu[0]); j++) {
-            if (test_data == known_imu[j].who_am_i) {
-                sensor_name = known_imu[j].name;
-                is_known_imu = true;
-                break;
-            }
-        }
-
-        if (is_known_imu) {
+        if (is_known_imu_who_am_i(test_data)) {
             ESP_LOGI(TAG, "%s found at I2C addr 0x%02X (WHO_AM_I=0x%02X)",
-                     sensor_name, s_mpu6050_addr, test_data);
+                     get_imu_name(test_data), s_mpu6050_addr, test_data);
             found = true;
             break;
         } else {
             ESP_LOGW(TAG, "Unexpected WHO_AM_I at addr 0x%02X: 0x%02X", s_mpu6050_addr, test_data);
-            ESP_LOGW(TAG, "Expected one of: 0x68(MPU6050), 0x69(MPU6500), 0x70(MPU6000), 0x71(MPU6500), 0x72(MPU9250), 0x73(MPU9150)");
-            ESP_LOGW(TAG, "Please verify your sensor module is MPU6050/6000/6500/9250 compatible");
+            ESP_LOGW(TAG, "Expected one of: 0x68(MPU6050), 0x69/0x71(MPU6500), 0x70(MPU6000), 0x72(MPU9250), 0x73(MPU9150)");
         }
     }
     
@@ -375,8 +357,97 @@ esp_err_t mpu6050_read_temp(int16_t *temp)
     return ESP_OK;
 }
 
-// 失败计数（仅用于日志）
 static int s_fail_count = 0;
+
+void mpu6050_reset_fail_count(void)
+{
+    s_fail_count = 0;
+    s_mpu6050_ready = true;
+}
+
+bool mpu6050_health_check(void)
+{
+    uint8_t who_am_i = 0;
+    esp_err_t ret = mpu6050_read_reg(0x75, &who_am_i, 1);
+    
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Health check: I2C communication failed");
+        return false;
+    }
+    
+    if (!is_known_imu_who_am_i(who_am_i)) {
+        ESP_LOGE(TAG, "Health check: Unknown WHO_AM_I value 0x%02X", who_am_i);
+        return false;
+    }
+    
+    // 尝试读取一次数据，确保设备正常工作
+    uint8_t buffer[6];
+    ret = mpu6050_read_reg(MPU6050_REG_ACCEL_XOUT_H, buffer, 6);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Health check: Data read failed");
+        return false;
+    }
+    
+    ESP_LOGI(TAG, "Health check passed (WHO_AM_I=0x%02X)", who_am_i);
+    return true;
+}
+
+static bool mpu6050_i2c_bus_recovery(void)
+{
+    ESP_LOGI(TAG, "Attempting I2C bus recovery...");
+    
+    // 1. 删除I2C驱动
+    i2c_driver_delete(s_i2c_num);
+    vTaskDelay(pdMS_TO_TICKS(100));
+    
+    // 2. 重新初始化I2C驱动
+    i2c_config_t i2c_config = {
+        .mode = I2C_MODE_MASTER,
+        .sda_io_num = s_sda_pin,
+        .scl_io_num = s_scl_pin,
+        .sda_pullup_en = GPIO_PULLUP_ENABLE,
+        .scl_pullup_en = GPIO_PULLUP_ENABLE,
+        .master.clk_speed = 50000,
+    };
+    
+    esp_err_t ret = i2c_param_config(s_i2c_num, &i2c_config);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "I2C param config failed: %s", esp_err_to_name(ret));
+        return false;
+    }
+    
+    ret = i2c_driver_install(s_i2c_num, I2C_MODE_MASTER, 0, 0, 0);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "I2C driver install failed: %s", esp_err_to_name(ret));
+        return false;
+    }
+    
+    ESP_LOGI(TAG, "I2C bus recovery successful");
+    vTaskDelay(pdMS_TO_TICKS(100));
+    return true;
+}
+
+bool mpu6050_reinit(void)
+{
+    ESP_LOGI(TAG, "Attempting MPU6050 re-initialization...");
+    
+    // 先尝试I2C总线恢复
+    if (!mpu6050_i2c_bus_recovery()) {
+        ESP_LOGE(TAG, "I2C bus recovery failed");
+        return false;
+    }
+    
+    // 重新初始化MPU6050
+    if (!mpu6050_wakeup()) {
+        ESP_LOGE(TAG, "MPU6050 wakeup failed");
+        return false;
+    }
+    
+    s_fail_count = 0;
+    s_mpu6050_ready = true;
+    ESP_LOGI(TAG, "MPU6050 re-initialization successful");
+    return true;
+}
 
 esp_err_t mpu6050_read_accel_gyro(int16_t *acc_x, int16_t *acc_y, int16_t *acc_z,
                                    int16_t *gyro_x, int16_t *gyro_y, int16_t *gyro_z)
@@ -401,30 +472,99 @@ esp_err_t mpu6050_read_accel_gyro(int16_t *acc_x, int16_t *acc_y, int16_t *acc_z
 
     s_fail_count++;
 
-    if (s_fail_count % 100 == 1) {
+    // 立即检查设备是否还在（可能掉电复位）
+    if (s_fail_count >= 3) {
+        uint8_t who_am_i = 0;
+        esp_err_t who_ret = mpu6050_read_reg(0x75, &who_am_i, 1);
+        
+        if (who_ret == ESP_OK && is_known_imu_who_am_i(who_am_i)) {
+            // 设备还在，但可能需要重新初始化
+            ESP_LOGW(TAG, "Device still present (WHO_AM_I=0x%02X) but data read failed, re-initializing...", who_am_i);
+            if (mpu6050_wakeup()) {
+                ESP_LOGI(TAG, "MPU6050 re-initialized successfully");
+                s_fail_count = 0;
+                s_mpu6050_ready = true;
+                return ESP_OK;
+            }
+        } else {
+            ESP_LOGE(TAG, "Device not responding (WHO_AM_I read ret=%d, data=0x%02X)", who_ret, who_am_i);
+        }
+    }
+
+    if (s_fail_count % 5 == 1) {
         ESP_LOGW(TAG, "MPU6050 read failed (ret=%d, count=%d)", ret, s_fail_count);
     }
 
-    if (s_fail_count == 500) {
-        ESP_LOGI(TAG, "Attempting MPU6050 re-initialization after 500 consecutive failures...");
-        uint8_t test_data = 0;
-        esp_err_t who_am_i_ret = mpu6050_read_reg(0x75, &test_data, 1);
-        if (who_am_i_ret == ESP_OK && (test_data == 0x68 || test_data == 0x72)) {
-            ESP_LOGI(TAG, "MPU6050 still responding (WHO_AM_I=0x%02X), trying wakeup...", test_data);
+    // 10次失败后尝试I2C总线恢复
+    if (s_fail_count == 10) {
+        ESP_LOGI(TAG, "Attempting I2C bus recovery after 10 consecutive failures...");
+        
+        if (mpu6050_i2c_bus_recovery()) {
             if (mpu6050_wakeup()) {
-                ESP_LOGI(TAG, "MPU6050 re-initialization successful");
+                ESP_LOGI(TAG, "MPU6050 re-initialization successful after bus recovery");
                 s_fail_count = 0;
+                s_mpu6050_ready = true;
             } else {
-                ESP_LOGE(TAG, "MPU6050 re-initialization failed");
+                ESP_LOGE(TAG, "MPU6050 re-initialization failed after bus recovery");
             }
         } else {
-            ESP_LOGE(TAG, "MPU6050 not responding (WHO_AM_I read ret=%d, data=0x%02X)", who_am_i_ret, test_data);
-            ESP_LOGE(TAG, "Check wiring: SDA=GPIO17, SCL=GPIO18, power=3.3V, pull-up resistors");
+            ESP_LOGE(TAG, "I2C bus recovery failed");
         }
     }
 
     s_mpu6050_ready = false;
     return ret;
+}
+
+void mpu6050_scan_i2c(void)
+{
+    ESP_LOGI(TAG, "===== I2C Bus Scan =====");
+    int found_count = 0;
+    
+    for (uint8_t addr = 0x08; addr < 0x78; addr++) {
+        i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+        i2c_master_start(cmd);
+        i2c_master_write_byte(cmd, (addr << 1) | I2C_MASTER_WRITE, true);
+        i2c_master_stop(cmd);
+        esp_err_t err = i2c_master_cmd_begin(s_i2c_num, cmd, pdMS_TO_TICKS(50));
+        i2c_cmd_link_delete(cmd);
+
+        if (err == ESP_OK) {
+            found_count++;
+            printf("I2C device found at address: 0x%02X\n", addr);
+
+            uint8_t who_am_i = 0;
+            uint8_t reg_addr = 0x75;
+            i2c_cmd_handle_t read_cmd = i2c_cmd_link_create();
+            i2c_master_start(read_cmd);
+            i2c_master_write_byte(read_cmd, (addr << 1) | I2C_MASTER_WRITE, true);
+            i2c_master_write_byte(read_cmd, reg_addr, true);
+            i2c_master_start(read_cmd);
+            i2c_master_write_byte(read_cmd, (addr << 1) | I2C_MASTER_READ, true);
+            i2c_master_read_byte(read_cmd, &who_am_i, I2C_MASTER_NACK);
+            i2c_master_stop(read_cmd);
+            esp_err_t who_err = i2c_master_cmd_begin(s_i2c_num, read_cmd, pdMS_TO_TICKS(50));
+            i2c_cmd_link_delete(read_cmd);
+
+            if (who_err == ESP_OK) {
+                printf("  -> WHO_AM_I=0x%02X (%s)\n", who_am_i, get_imu_name(who_am_i));
+            } else {
+                printf("  -> WHO_AM_I read failed (may not be IMU sensor)\n");
+            }
+        }
+    }
+    
+    printf("I2C scan complete, found %d device(s)\n", found_count);
+    
+    if (found_count == 0) {
+        printf("[错误] 没有找到任何I2C设备！请检查：\n");
+        printf("  1. 接线是否正确（SDA-GPIO17, SCL-GPIO18）\n");
+        printf("  2. 是否连接了4.7kΩ上拉电阻\n");
+        printf("  3. MPU6050电源是否正常（3.3V）\n");
+        printf("  4. AD0引脚状态（接地=0x68, 接VCC=0x69）\n");
+    }
+    
+    printf("=========================\n");
 }
 
 void mpu6050_print_data(void)

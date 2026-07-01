@@ -163,20 +163,6 @@ void app_main(void)
     gpio_set_pull_mode(I2C_SCL_PIN, GPIO_PULLUP_ONLY);
     vTaskDelay(pdMS_TO_TICKS(50));
     
-    int sda_level = gpio_get_level(I2C_SDA_PIN);
-    int scl_level = gpio_get_level(I2C_SCL_PIN);
-    ESP_LOGI(TAG, "=== I2C Hardware Pre-Check ===");
-    ESP_LOGI(TAG, "SDA=GPIO%d level=%d, SCL=GPIO%d level=%d (expected: 1,1)", 
-             I2C_SDA_PIN, sda_level, I2C_SCL_PIN, scl_level);
-    
-    if (sda_level == 0 && scl_level == 0) {
-        ESP_LOGE(TAG, "I2C LINES ARE BOTH LOW! Check wiring and pull-up resistors.");
-    } else if (sda_level == 0 || scl_level == 0) {
-        ESP_LOGE(TAG, "One I2C line is LOW! Check wiring.");
-    } else {
-        ESP_LOGI(TAG, "I2C lines are HIGH - pull-up resistors working");
-    }
-
     i2c_config_t i2c_config = {
         .mode = I2C_MODE_MASTER,
         .sda_io_num = I2C_SDA_PIN,
@@ -188,8 +174,6 @@ void app_main(void)
     
     ESP_ERROR_CHECK(i2c_param_config(I2C_NUM_0, &i2c_config));
     ESP_ERROR_CHECK(i2c_driver_install(I2C_NUM_0, I2C_MODE_MASTER, 0, 0, 0));
-    ESP_LOGI(TAG, "I2C driver installed: Port=I2C_NUM_0, SDA=GPIO%d, SCL=GPIO%d, speed=50kHz", 
-             I2C_SDA_PIN, I2C_SCL_PIN);
     
     vTaskDelay(pdMS_TO_TICKS(100));
 

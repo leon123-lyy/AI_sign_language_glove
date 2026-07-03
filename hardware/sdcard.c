@@ -87,7 +87,7 @@ bool sdcard_init(void)
 }
 
 void* sdcard_csv_open(const char* filename, const char* header)
-{
+    {
     if (!s_mounted) {
         ESP_LOGE(TAG, "SD card not mounted");
         return NULL;

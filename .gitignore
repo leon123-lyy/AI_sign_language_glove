@@ -66,6 +66,9 @@ env/
 .ccls-cache/
 compile_commands.json
 
+# IDE / Editor
+.trae/
+
 # Windows specific
 Thumbs.db
 ehthumbs.db

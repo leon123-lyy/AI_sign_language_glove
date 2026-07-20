@@ -8,6 +8,7 @@ idf_component_register(SRCS "main.c"
                     "../app/inference.cpp"  # 新增推理模块
                     "../app/button.cpp"      # 新增按钮模块
                     "../app/espnow_sender_wrapper.cpp"  # ESP-NOW发送模块（C++包装）
+                    "../app/ble_notify.c"  # BLE通知模块
                     "tflite-model/tflite_learn_991408_14_compiled.cpp"
                     # KISS FFT 源文件
                     "edge-impulse-sdk/dsp/kissfft/kiss_fft.cpp"
@@ -147,7 +148,8 @@ idf_component_register(SRCS "main.c"
                     REQUIRES nvs_flash
                     REQUIRES esp_adc
                     REQUIRES esp_netif
-                    REQUIRES esp_wifi)
+                    REQUIRES esp_wifi
+                    REQUIRES bt)
 
 # 禁用弃用警告（Edge Impulse SDK 使用了 std::is_pod 等已弃用的 API）
 target_compile_options(${COMPONENT_LIB} PRIVATE "-Wno-deprecated-declarations")

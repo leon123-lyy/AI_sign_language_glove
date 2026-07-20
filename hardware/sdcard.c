@@ -11,6 +11,8 @@
 #include "esp_vfs_fat.h"
 #include "driver/gpio.h"
 #include "errno.h"
+#include "sys/stat.h"
+#include "dirent.h"
 
 static const char *TAG = "SDCard";
 
@@ -52,8 +54,8 @@ bool sdcard_init(void)
 
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
         .format_if_mount_failed = false,
-        .max_files = 5,
-        .allocation_unit_size = 512,
+        .max_files = 15,
+        .allocation_unit_size = 0,
     };
     
     ret = esp_vfs_fat_sdspi_mount(MOUNT_POINT, &host, &slot_config, &mount_config, &s_card);
@@ -86,8 +88,59 @@ bool sdcard_init(void)
     return true;
 }
 
+void sdcard_deinit(void)
+{
+    if (s_mounted) {
+        esp_vfs_fat_sdcard_unmount(MOUNT_POINT, s_card);
+        spi_bus_free(SPI3_HOST);
+        s_mounted = false;
+        s_card = NULL;
+        ESP_LOGI(TAG, "SD card unmounted");
+    }
+}
+
+static void sdcard_diagnose(const char* filepath)
+{
+    struct stat st;
+    
+    if (stat(filepath, &st) == 0) {
+        ESP_LOGI(TAG, "File exists: %s, size=%ld, mode=0%o", filepath, (long)st.st_size, st.st_mode);
+    } else {
+        ESP_LOGI(TAG, "File does not exist: %s, errno=%d", filepath, errno);
+    }
+
+    char test_path[64];
+    snprintf(test_path, sizeof(test_path), "%s/diag_test.txt", MOUNT_POINT);
+    FILE* f = fopen(test_path, "w");
+    if (f) {
+        fprintf(f, "test\n");
+        fclose(f);
+        remove(test_path);
+        ESP_LOGI(TAG, "Test file create/delete: OK");
+    } else {
+        ESP_LOGI(TAG, "Test file create failed, errno=%d (%s)", errno, strerror(errno));
+    }
+
+    DIR* dir = opendir(MOUNT_POINT);
+    if (dir) {
+        int count = 0;
+        struct dirent* entry;
+        ESP_LOGI(TAG, "Root directory contents:");
+        while ((entry = readdir(dir)) != NULL) {
+            count++;
+            if (count <= 20) {
+                ESP_LOGI(TAG, "  [%d] %s", count, entry->d_name);
+            }
+        }
+        closedir(dir);
+        ESP_LOGI(TAG, "Total entries: %d", count);
+    } else {
+        ESP_LOGI(TAG, "Cannot open root directory, errno=%d", errno);
+    }
+}
+
 void* sdcard_csv_open(const char* filename, const char* header)
-    {
+{
     if (!s_mounted) {
         ESP_LOGE(TAG, "SD card not mounted");
         return NULL;
@@ -99,7 +152,29 @@ void* sdcard_csv_open(const char* filename, const char* header)
     FILE* file = fopen(filepath, "w");
     if (!file) {
         ESP_LOGE(TAG, "Failed to open file: %s, errno=%d (%s)", filepath, errno, strerror(errno));
-        return NULL;
+        
+        if (errno == 13) {
+            ESP_LOGI(TAG, "Permission denied, running diagnostics...");
+            sdcard_diagnose(filepath);
+            
+            ESP_LOGI(TAG, "Attempting SD card remount...");
+            sdcard_deinit();
+            vTaskDelay(pdMS_TO_TICKS(100));
+            if (sdcard_init()) {
+                ESP_LOGI(TAG, "SD card remounted, retrying file open");
+                file = fopen(filepath, "w");
+                if (!file) {
+                    ESP_LOGE(TAG, "Retry failed: %s, errno=%d (%s)", filepath, errno, strerror(errno));
+                    sdcard_diagnose(filepath);
+                    return NULL;
+                }
+            } else {
+                ESP_LOGE(TAG, "SD card remount failed");
+                return NULL;
+            }
+        } else {
+            return NULL;
+        }
     }
 
     if (header && fprintf(file, "%s\n", header) < 0) {

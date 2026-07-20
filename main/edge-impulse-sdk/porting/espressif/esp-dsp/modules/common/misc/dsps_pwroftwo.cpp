@@ -1,3 +1,5 @@
+#include "edge-impulse-sdk/dsp/config.hpp"
+#if EIDSP_USE_ESP_DSP
 // Copyright 2018-2019 Espressif Systems (Shanghai) PTE LTD
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -29,3 +31,5 @@ int dsp_power_of_two(int x)
     }
     return 0;
 }
+
+#endif // EIDSP_USE_ESP_DSP

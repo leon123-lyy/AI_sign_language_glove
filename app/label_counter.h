@@ -33,6 +33,13 @@ int label_counter_get_next(const char *label);
 int label_counter_get_current(const char *label);
 
 /**
+ * @brief 设置标签的起始计数值（下次get_next从此值开始）
+ * @param label 标签名称
+ * @param start_count 起始计数值（如设为99，则下次从100开始）
+ */
+void label_counter_set(const char *label, int start_count);
+
+/**
  * @brief 重置指定标签的计数
  * @param label 标签名称
  */

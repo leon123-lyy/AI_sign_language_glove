@@ -8,7 +8,7 @@
  *     - 特征总数：EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE = 100 × 16 = 1600
  *     - 数据布局：按帧交错 [f0_ax0, f0_ax1, ..., f0_ax15, f1_ax0, ..., f99_ax15]
  *   DSP 处理链：
- *     Raw 1600 floats → Raw Features → 1600 features → INT8 NN → 3 classes
+ *     Raw 1600 floats → Raw Features → 1600 features → INT8 NN → 6 classes
  */
 
 #include "inference.h"

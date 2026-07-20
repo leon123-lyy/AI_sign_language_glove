@@ -5,6 +5,8 @@
 
 extern "C" {
 #include "espnow_sender.h"
+#include "ble_notify.h"
+#include "inference.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "esp_now.h"
@@ -20,8 +22,8 @@ static const char *TAG = "ESPNOW";
 /*===========================================================================
  * WiFi配置（连接到同一WiFi网络以确保通信信道一致）
  *===========================================================================*/
-#define WIFI_SSID     "OKO"     // 替换为你的WiFi名称
-#define WIFI_PASSWORD "1234567890" // 替换为你的WiFi密码
+#define WIFI_SSID     "000"     // 替换为你的WiFi名称
+#define WIFI_PASSWORD "123456789" // 替换为你的WiFi密码
 #define MAX_RETRY     5
 
 /*===========================================================================
@@ -30,19 +32,15 @@ static const char *TAG = "ESPNOW";
 static uint8_t s_receiver_mac[] = {0xA0, 0xB7, 0x65, 0x2D, 0x42, 0x00};
 
 /*===========================================================================
- * 手势标签循环发送列表
- *===========================================================================*/
-static const char *s_labels[] = {"this", "our", "stuff", "bye"};
-static const int s_label_count = sizeof(s_labels) / sizeof(s_labels[0]);
-static int s_label_index = 0;
-
-/*===========================================================================
  * GPIO40 按钮配置
  *===========================================================================*/
 #define ESPNOW_BUTTON_PIN GPIO_NUM_40
 
-/* WiFi断开提示标志（只在启动时显示一次） */
-static bool s_wifi_disconnect_first = true;
+/** BLE通知标签带前缀 */
+#define ESPNOW_BLE_PREFIX "[result] "
+
+/** 是否正在处理推理（避免按钮长按/抖动导致重复触发） */
+static volatile bool s_is_processing = false;
 
 /*===========================================================================
  * ESP-NOW 发送回调（C 链接）
@@ -58,7 +56,7 @@ extern "C" {
 static void IRAM_ATTR espnow_send_cb(const wifi_tx_info_t *tx_info, esp_now_send_status_t status)
 {
     if (status == ESP_NOW_SEND_SUCCESS) {
-        ESP_LOGI(TAG, "发送成功");
+        ESP_LOGD(TAG, "发送成功");
     } else {
         ESP_LOGW(TAG, "发送失败");
     }
@@ -67,6 +65,8 @@ static void IRAM_ATTR espnow_send_cb(const wifi_tx_info_t *tx_info, esp_now_send
 /*===========================================================================
  * 公共接口
  *===========================================================================*/
+
+static bool s_log_suppressed = false;
 
 /**
  * @brief WiFi事件处理函数
@@ -81,14 +81,20 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        if (s_wifi_disconnect_first) {
-            ESP_LOGI(TAG, "WiFi断开，尝试重新连接...");
-            s_wifi_disconnect_first = false;
+        /* 首次断开时禁用 WiFi 底层调试日志，避免重复刷屏 */
+        if (!s_log_suppressed) {
+            esp_log_level_set("wifi", ESP_LOG_ERROR);
+            s_log_suppressed = true;
         }
         esp_wifi_connect();
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-        ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
-        ESP_LOGI(TAG, "WiFi连接成功，IP: " IPSTR, IP2STR(&event->ip_info.ip));
+        /* 仅在首次获取IP时打印 */
+        static bool got_ip_once = false;
+        if (!got_ip_once) {
+            ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
+            ESP_LOGI(TAG, "WiFi connected, IP: " IPSTR, IP2STR(&event->ip_info.ip));
+            got_ip_once = true;
+        }
     }
 }
 
@@ -120,6 +126,31 @@ static esp_err_t wifi_connect(void)
     ESP_ERROR_CHECK(esp_wifi_start());
 
     return ESP_OK;
+}
+
+/**
+ * @brief 通过 ESP-NOW 发送推理结果
+ * @param label 识别标签
+ * @param confidence 置信度 (0.0 ~ 1.0)
+ * @return ESP_OK 表示成功
+ */
+esp_err_t espnow_send_result(const char *label, float confidence)
+{
+    if (!label) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    espnow_message_t msg = {0};
+    snprintf(msg.text, sizeof(msg.text), "%s", label);
+
+    esp_err_t send_ret = esp_now_send(s_receiver_mac, (uint8_t *)&msg, sizeof(msg));
+    if (send_ret == ESP_OK) {
+        printf("[ESP-NOW] 已发送推理结果: \"%s\"\n", msg.text);
+    } else {
+        printf("[ESP-NOW] 发送失败: \"%s\" (错误: %s)\n", msg.text, esp_err_to_name(send_ret));
+    }
+
+    return send_ret;
 }
 
 esp_err_t espnow_sender_init(void)
@@ -169,7 +200,7 @@ esp_err_t espnow_sender_init(void)
     ESP_LOGI(TAG, "ESP-NOW 初始化完成");
     ESP_LOGI(TAG, "接收端 MAC: " MACSTR, MAC2STR(s_receiver_mac));
     ESP_LOGI(TAG, "按钮引脚: GPIO%d", ESPNOW_BUTTON_PIN);
-    ESP_LOGI(TAG, "标签列表: this -> our -> stuff -> bye (循环)");
+    ESP_LOGI(TAG, "行为: 按下按钮 -> 等待 2 秒 -> 运行手势推理 -> 通过 ESP-NOW 发送结果");
 
     return ESP_OK;
 }
@@ -199,26 +230,48 @@ void espnow_sender_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(50));
 
             if (gpio_get_level(ESPNOW_BUTTON_PIN) == 0) {
-                /* 延迟2秒后发送 */
-                vTaskDelay(pdMS_TO_TICKS(2000));
-
-                /* 获取当前要发送的标签 */
-                const char *label = s_labels[s_label_index];
-
-                /* 构造消息 */
-                espnow_message_t msg = {0};
-                strncpy(msg.text, label, sizeof(msg.text) - 1);
-
-                /* 发送 ESP-NOW 消息 */
-                esp_err_t ret = esp_now_send(s_receiver_mac, (uint8_t *)&msg, sizeof(msg));
-                if (ret == ESP_OK) {
-                    printf("[ESP-NOW] 已发送: \"%s\" (第%d次)\n", label, s_label_index + 1);
+                /* 避免与上一次推理重叠 */
+                if (s_is_processing) {
+                    ESP_LOGW(TAG, "正在处理上一次推理，按下忽略");
                 } else {
-                    printf("[ESP-NOW] 发送失败: \"%s\" (错误: %s)\n", label, esp_err_to_name(ret));
-                }
+                    s_is_processing = true;
 
-                /* 切换到下一个标签（循环） */
-                s_label_index = (s_label_index + 1) % s_label_count;
+                    /* 延迟2秒后开始采集（给用户准备手势的时间） */
+                    printf("[ESP-NOW] 按下按钮，2秒后开始采集手势数据...\n");
+                    vTaskDelay(pdMS_TO_TICKS(2000));
+
+                    /* 执行一次手势推理（内部完成 100 帧采集 + 模型推理） */
+                    inference_result_t result = {
+                        .label = NULL,
+                        .confidence = 0.0f,
+                        .label_index = -1,
+                    };
+                    esp_err_t run_ret = inference_run(&result);
+
+                    if (run_ret == ESP_OK && result.label != NULL) {
+                        espnow_message_t msg = {0};
+                        snprintf(msg.text, sizeof(msg.text), "%s", result.label);
+
+                        /* 发送 ESP-NOW 消息 */
+                        esp_err_t send_ret = esp_now_send(s_receiver_mac, (uint8_t *)&msg, sizeof(msg));
+                        if (send_ret == ESP_OK) {
+                            printf("[ESP-NOW] 已发送推理结果: \"%s\"\n", msg.text);
+
+                            /* 通过BLE通知同时推送到手机，格式与 button.cpp 保持一致 */
+                            char ble_msg[64];
+                            snprintf(ble_msg, sizeof(ble_msg), ESPNOW_BLE_PREFIX "%s (%.1f%%)",
+                                     result.label, result.confidence * 100.0f);
+                            ble_notify_send(ble_msg);
+                        } else {
+                            printf("[ESP-NOW] 发送失败: \"%s\" (错误: %s)\n",
+                                   msg.text, esp_err_to_name(send_ret));
+                        }
+                    } else {
+                        printf("[ESP-NOW] 推理失败，未发送结果\n");
+                    }
+
+                    s_is_processing = false;
+                }
             }
         }
 

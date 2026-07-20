@@ -28,6 +28,11 @@ extern "C" {
 bool sdcard_init(void);
 
 /**
+ * @brief 反初始化SD卡（卸载并释放资源）
+ */
+void sdcard_deinit(void);
+
+/**
  * @brief 打开CSV文件并写入表头
  * @param filename 文件名（如 "data.csv"）
  * @param header CSV表头行（不含换行符）

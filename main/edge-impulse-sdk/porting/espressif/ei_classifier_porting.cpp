@@ -100,12 +100,7 @@ __attribute__((weak)) void ei_printf_float(float f) {
 __attribute__((weak)) void *ei_malloc(size_t size) {
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
-    // 优先使用PSRAM，如果失败则回退到内部RAM
-    void *ptr = heap_caps_aligned_alloc(16, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (ptr == NULL) {
-        ptr = heap_caps_aligned_alloc(16, size, MALLOC_CAP_DEFAULT);
-    }
-    return ptr;
+    return heap_caps_aligned_alloc(16, size, MALLOC_CAP_DEFAULT);
 #else
     return aligned_alloc(16, size);
 #endif
@@ -116,12 +111,7 @@ __attribute__((weak)) void *ei_malloc(size_t size) {
 __attribute__((weak)) void *ei_calloc(size_t nitems, size_t size) {
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
-    // 优先使用PSRAM，如果失败则回退到内部RAM
-    void *ptr = heap_caps_calloc(nitems, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (ptr == NULL) {
-        ptr = heap_caps_calloc(nitems, size, MALLOC_CAP_DEFAULT);
-    }
-    return ptr;
+    return heap_caps_calloc(nitems, size, MALLOC_CAP_DEFAULT);
 #else
     void *p;
     p = aligned_alloc(16, nitems * size);

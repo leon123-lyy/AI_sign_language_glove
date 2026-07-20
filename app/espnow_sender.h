@@ -1,7 +1,7 @@
 /**
  * @file espnow_sender.h
- * @brief ESP-NOW 手势标签发送模块接口定义
- * @details 通过GPIO40按钮依次循环发送手势标签字符串到接收端
+ * @brief ESP-NOW 手势推理结果发送模块接口定义
+ * @details 提供ESP-NOW发送功能，支持通过函数接口发送推理结果（标签+置信度）
  */
 
 #ifndef _ESPNOW_SENDER_H_
@@ -28,11 +28,12 @@ typedef struct {
 esp_err_t espnow_sender_init(void);
 
 /**
- * @brief ESP-NOW 发送任务入口函数
- * @details 轮询GPIO40按钮状态，按下后依次循环发送手势标签
- * @param arg 任务参数（未使用）
+ * @brief 通过 ESP-NOW 发送推理结果
+ * @param label 识别标签字符串
+ * @param confidence 置信度 (0.0 ~ 1.0)
+ * @return ESP_OK 表示成功
  */
-void espnow_sender_task(void *arg);
+esp_err_t espnow_send_result(const char *label, float confidence);
 
 #ifdef __cplusplus
 }

@@ -1,13 +1,16 @@
 /**
  * @file button.h
  * @brief 物理按钮模块接口定义
- * @details 处理GPIO 41按钮的中断检测和一次性推理触发
+ * @details
+ *   GPIO41: 按下 → 手势推理 (2秒采集) → BLE通知
+ *   GPIO40: 按下 → 手势推理 (2秒采集) → BLE通知 + ESP-NOW 发送
  */
 
 #ifndef _BUTTON_H_
 #define _BUTTON_H_
 
 #include "esp_err.h"
+#include "driver/gpio.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -16,7 +19,11 @@ extern "C" {
 /**
  * @brief 按钮引脚定义
  */
-#define BUTTON_PIN    GPIO_NUM_41   /*!< 推理按钮引脚 - GPIO41 */
+#define BUTTON_PIN_41    GPIO_NUM_41   /*!< 推理按钮 - GPIO41: 推理+BLE */
+#define BUTTON_PIN_40    GPIO_NUM_40   /*!< 推理按钮 - GPIO40: 推理+BLE+ESP-NOW */
+
+/** @brief 兼容旧的单按钮引用（指向GPIO41） */
+#define BUTTON_PIN       BUTTON_PIN_41
 
 /**
  * @brief 初始化按钮模块

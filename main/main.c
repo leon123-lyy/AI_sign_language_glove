@@ -26,6 +26,7 @@
 #include "inference.h"
 #include "button.h"
 #include "espnow_sender.h"
+#include "ble_notify.h"
 
 static const char *TAG = "Main";
 
@@ -112,6 +113,21 @@ static void uart_command_task(void* arg)
                     } else if (token && strcmp(token, "reset") == 0) {
                         label_counter_reset_all();
                         printf("[系统] 标签计数已重置\n\n");
+                    } else if (token && strcmp(token, "count") == 0) {
+                        char* count_str = strtok(NULL, " ");
+                        if (count_str) {
+                            int start_count = atoi(count_str);
+                            if (start_count >= 0) {
+                                label_counter_set(g_current_label, start_count);
+                                printf("[系统] 标签 '%s' 起始计数已设置为: %d\n\n", g_current_label, start_count);
+                            } else {
+                                printf("[错误] 计数值必须 >= 0\n\n");
+                            }
+                        } else {
+                            int current = label_counter_get_current(g_current_label);
+                            printf("[系统] 标签 '%s' 当前计数: %d\n", g_current_label, current);
+                            printf("[用法] count <数值> - 设置起始计数值（下次录制从该值+1开始）\n\n");
+                        }
                     } else if (token && strcmp(token, "scan") == 0) {
                         printf("[系统] 开始扫描I2C总线...\n");
                         mpu6050_scan_i2c();
@@ -147,11 +163,9 @@ void app_main(void)
     }
 
     // === I2C 配置 ===
-    // ESP32-S3 的 GPIO17/18 默认被 JTAG 占用，需要先释放
     #define I2C_SDA_PIN    GPIO_NUM_17
     #define I2C_SCL_PIN    GPIO_NUM_18
     
-    // 释放JTAG引脚，将其用于普通GPIO
     // GPIO17=TDI, GPIO18=TDO, GPIO19=TCK, GPIO20=TMS
     gpio_reset_pin(GPIO_NUM_17);
     gpio_reset_pin(GPIO_NUM_18);
@@ -191,9 +205,22 @@ void app_main(void)
 
     inference_init();
 
+    // 配置 GPIO39 为输出低电平，作为 GPIO40/41/42 按钮的"虚拟地"
+    gpio_config_t vground_conf = {
+        .pin_bit_mask = (1ULL << GPIO_NUM_39),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&vground_conf);
+    gpio_set_level(GPIO_NUM_39, 0);
+
     button_init();
 
     espnow_sender_init();
+
+    ble_notify_init();
 
     xTaskCreate(uart_command_task, "uart_command", 4096, NULL, 5, NULL);
 
@@ -201,15 +228,14 @@ void app_main(void)
 
     xTaskCreate(record_button_task, "record_button", 4096, NULL, 5, NULL);
 
-    xTaskCreate(espnow_sender_task, "espnow_sender", 4096, NULL, 5, NULL);
-
     printf("\n=== 手语数据采集系统 ===\n");
     printf("命令: label <名称>  - 设置录制标签 (默认: gesture)\n");
     printf("命令: reset         - 重置标签计数\n");
+    printf("命令: count [数值]  - 查看/设置标签起始计数值\n");
     printf("命令: scan          - 扫描I2C总线，检测MPU6050设备\n");
     printf("按钮: GPIO42       - 按下开始录制CSV文件\n");
-    printf("按钮: GPIO41       - 按下开始2秒手势识别\n");
-    printf("按钮: GPIO40       - 按下发送ESP-NOW手势标签\n");
+    printf("按钮: GPIO41       - 按下开始手势识别 (BLE通知)\n");
+    printf("按钮: GPIO40       - 按下开始手势识别 (BLE通知 + ESP-NOW发送)\n");
     printf("========================================\n\n");
 
     while (1) {

@@ -15,7 +15,7 @@ static const char *TAG = "LabelCounter";
 // 标签计数结构体
 typedef struct {
     char label[32];  // 标签名称
-    int count;       // 当前计数
+    int count ;       // 当前计数
 } label_entry_t;
 
 // 标签表
@@ -88,6 +88,38 @@ void label_counter_reset(const char *label)
             return;
         }
     }
+}
+
+void label_counter_set(const char *label, int start_count)
+{
+    if (!label || strlen(label) == 0) {
+        return;
+    }
+
+    if (start_count < 0) {
+        start_count = 0;
+    }
+
+    // 查找现有标签并设置
+    for (int i = 0; i < s_label_count; i++) {
+        if (strcmp(s_label_table[i].label, label) == 0) {
+            s_label_table[i].count = start_count;
+            ESP_LOGI(TAG, "Set label '%s' to %d", label, start_count);
+            return;
+        }
+    }
+
+    // 标签不存在则创建并设置
+    if (s_label_count >= MAX_LABELS) {
+        ESP_LOGE(TAG, "Maximum labels exceeded (%d)", MAX_LABELS);
+        return;
+    }
+
+    strncpy(s_label_table[s_label_count].label, label, sizeof(s_label_table[s_label_count].label) - 1);
+    s_label_table[s_label_count].count = start_count;
+    s_label_count++;
+
+    ESP_LOGI(TAG, "Created new label '%s' with count %d", label, start_count);
 }
 
 void label_counter_reset_all(void)

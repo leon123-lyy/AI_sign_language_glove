@@ -1,3 +1,5 @@
+#include "edge-impulse-sdk/dsp/config.hpp"
+#if EIDSP_USE_ESP_DSP
 // Copyright 2018-2019 Espressif Systems (Shanghai) PTE LTD
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -11,6 +13,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
 
 #include <stdint.h>
 #include "dsps_fft_tables.h"
@@ -587,3 +590,5 @@ const uint16_t dsps_fft2r_rev_tables_fc32_size[] = {
     (const uint16_t)992, // bitrev2r_table_2048_fc32_size,
     (const uint16_t)2016,// bitrev2r_table_4096_fc32_size,
 };
+
+#endif // EIDSP_USE_ESP_DSP
